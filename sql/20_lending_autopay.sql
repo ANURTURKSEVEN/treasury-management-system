@@ -1,0 +1,1 @@
+ALTER TABLE lending ADD COLUMN auto_pay TINYINT DEFAULT 1 AFTER status;

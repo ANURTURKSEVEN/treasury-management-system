@@ -1,1 +1,13 @@
-/bin/
+target/
+*.class
+.settings/
+.classpath
+.project
+bin/
+
+# Gizli ayarlar (DB/mail şifreleri) — repoya girmemeli
+src/main/resources/db.properties
+src/main/resources/mail.properties
+logs/
+lib/
+reports/
