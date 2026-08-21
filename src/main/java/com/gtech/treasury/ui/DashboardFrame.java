@@ -1,6 +1,7 @@
 package com.gtech.treasury.ui;
 
 import com.gtech.treasury.dao.PermissionDAO;
+import com.gtech.treasury.model.Message;
 import com.gtech.treasury.model.Screen;
 import com.gtech.treasury.model.User;
 import com.gtech.treasury.util.UITheme;
@@ -59,11 +60,7 @@ public class DashboardFrame extends JFrame {
         add(buildStatusBar(), BorderLayout.SOUTH);
 
         openTab("home", "🏠 Anasayfa");   // açılışta anasayfa sekmesi
-
-        // Admin/trader girişinde bekleyen kredi başvurularını hatırlat
-        if ("ADMIN".equals(currentUser.getRole()) || "TRADER".equals(currentUser.getRole())) {
-            SwingUtilities.invokeLater(this::checkPendingLoans);
-        }
+        // Not: Girişteki "bekleyen kredi" açılır uyarısı kaldırıldı; artık her şey Gelen Kutusu'na düşüyor.
     }
 
     private void checkPendingLoans() {
@@ -95,15 +92,14 @@ public class DashboardFrame extends JFrame {
 
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 14, 0));
         right.setOpaque(false);
-        if (handlesDisputes()) {   // admin/trader itirazları görür ve karar verir
-            bellButton = new JButton("İtirazlar");
-            bellButton.setIcon(com.gtech.treasury.util.IconLoader.get("bell", 18));
-            bellButton.setToolTipText("İtiraz / Bildirimler");
-            bellButton.setFocusable(false);
-            bellButton.setFont(bellButton.getFont().deriveFont(Font.BOLD, 13f));
-            bellButton.addActionListener(e -> openDisputeCenter());
-            right.add(bellButton);
-        }
+        // Tüm banka kullanıcıları (admin/trader/viewer) gelen kutusunu görür
+        bellButton = new JButton();
+        bellButton.setIcon(com.gtech.treasury.util.IconLoader.get("bell", 18));
+        bellButton.setToolTipText("Gelen Kutusu / Mesajlar");
+        bellButton.setFocusable(false);
+        bellButton.setFont(bellButton.getFont().deriveFont(Font.BOLD, 13f));
+        bellButton.addActionListener(e -> openInbox());
+        right.add(bellButton);
         JLabel who = new JLabel(currentUser.getUsername() + "  •  " + currentUser.getRole());
         who.setForeground(Color.WHITE);
         right.add(who);
@@ -114,8 +110,28 @@ public class DashboardFrame extends JFrame {
 
     private void refreshBell() {
         if (bellButton == null) return;
-        int n = new com.gtech.treasury.dao.NotificationDAO().staffUnreadCount();
+        int n = new com.gtech.treasury.dao.MessageDAO().staffUnreadCount(currentUser.getUsername());
         bellButton.setText(n > 0 ? "🔔 " + n : "🔔");
+    }
+
+    /** Gelen kutusu sekmesini açar (aksiyon butonu ilgili onay ekranını açacak). */
+    private void openInbox() {
+        openTab("INBOX", "📬 Gelen Kutusu");
+        refreshBell();
+    }
+
+    /** Gelen kutusundaki bir onay mesajını, ilgili başvurunun değerlendirme penceresiyle açar. */
+    private void openEvaluate(Message m) {
+        int id = -1;
+        try { id = Integer.parseInt(m.getRefNo()); } catch (Exception ignored) { }
+        boolean loan = "LOAN_APPROVAL".equals(m.getCategory());
+        String key = loan ? "LENDING_APPROVAL" : "BORROWING_APPROVAL";
+        openTab(key, loan ? "💰 Kredi Onay" : "🏦 Mevduat Onay");   // ekranı aç (varsa öne getirir)
+        Component c = openTabs.get(key);
+        if (id > 0) {
+            if (loan && c instanceof LendingPanel)      ((LendingPanel) c).evaluate(id);
+            else if (!loan && c instanceof BorrowingPanel) ((BorrowingPanel) c).evaluate(id);
+        }
     }
 
     /** İtiraz yönetimi: açık itirazları listeler; personel kabul/ret ile sonuçlandırır. */
@@ -224,6 +240,8 @@ public class DashboardFrame extends JFrame {
 
         DefaultMutableTreeNode root = new DefaultMutableTreeNode("root");
         root.add(leaf("🏠 Anasayfa", "home", allowed));
+        // Mesajlar (banka içi + müşteri yazışmaları) — yan menüden de erişilebilir
+        root.add(new DefaultMutableTreeNode(new MenuItem("INBOX", "📬 Mesajlar")));
         DefaultMutableTreeNode musteri = group("👥 Müşteri İşlemleri",
                 leaf("Müşteriler", "CUSTOMER", allowed),
                 leaf("Hesaplar", "ACCOUNTS", allowed),
@@ -243,6 +261,7 @@ public class DashboardFrame extends JFrame {
         if (allowed.contains("LENDING")) {
             islemler.add(group("💰 Krediler",
                     new DefaultMutableTreeNode(new MenuItem("LENDING_APPROVAL", "Kredi Onay")),
+                    new DefaultMutableTreeNode(new MenuItem("LENDING_DISBURSE", "Kullandırım (Onaylanan)")),
                     new DefaultMutableTreeNode(new MenuItem("LENDING_ACTIVE", "Aktif Krediler")),
                     new DefaultMutableTreeNode(new MenuItem("LENDING_CLOSED", "Ödenen / Kapanan")),
                     new DefaultMutableTreeNode(new MenuItem("LENDING_REJECTED", "Reddedilen Krediler")),
@@ -257,10 +276,22 @@ public class DashboardFrame extends JFrame {
             }
             islemler.insert(kur, 0);
         }
-        if ("ADMIN".equals(currentUser.getRole())) {   // banka kasası + nakit akışı: yalnızca admin
-            islemler.add(new DefaultMutableTreeNode(new MenuItem("BANK", "Banka Kasası")));
-            islemler.add(new DefaultMutableTreeNode(new MenuItem("CASHFLOW", "Nakit Akışı")));
+        // Para Piyasası (Treasury / Money Market) — Borçlanma + Plasman (borç verme)
+        DefaultMutableTreeNode pp = group("💹 Para Piyasası");
+        if (allowed.contains("MM_BORROW")) {
+            pp.add(new DefaultMutableTreeNode(new MenuItem("MM_BORROW", "Borçlanma Girişi")));
+            pp.add(new DefaultMutableTreeNode(new MenuItem("MM_LIST", "Borçlanma İşlemleri")));
         }
+        if (allowed.contains("MM_LEND")) {
+            pp.add(new DefaultMutableTreeNode(new MenuItem("MM_LEND", "Borç Verme (Plasman) Girişi")));
+            pp.add(new DefaultMutableTreeNode(new MenuItem("MM_LEND_LIST", "Plasman İşlemleri")));
+        }
+        if (pp.getChildCount() > 0) islemler.add(pp);
+        // Banka Kasası + Nakit Akışı: artık rol/menü yetkisine göre (Rol Yetkileri ekranından atanır)
+        if (allowed.contains("BANK"))
+            islemler.add(new DefaultMutableTreeNode(new MenuItem("BANK", "Banka Kasası")));
+        if (allowed.contains("CASHFLOW"))
+            islemler.add(new DefaultMutableTreeNode(new MenuItem("CASHFLOW", "Nakit Akışı")));
         addGroup(root, islemler);
         addGroup(root, group("📊 Raporlama",
                 leaf("Raporlar", "REPORTS", allowed)));
@@ -417,11 +448,17 @@ public class DashboardFrame extends JFrame {
             case "BORROWING_CLOSED":   return new BorrowingPanel(currentUser, BorrowingPanel.V_CLOSED);
             case "BORROWING_REJECTED": return new BorrowingPanel(currentUser, BorrowingPanel.V_REJECTED);
             case "LENDING_APPROVAL": return new LendingPanel(currentUser, LendingPanel.V_APPROVAL);
+            case "LENDING_DISBURSE": return new LendingPanel(currentUser, LendingPanel.V_APPROVED);
             case "LENDING_ACTIVE":   return new LendingPanel(currentUser, LendingPanel.V_ACTIVE);
             case "LOAN_OVERDUE": return new OverduePanel();
             case "LENDING_CLOSED":   return new LendingPanel(currentUser, LendingPanel.V_CLOSED);
             case "LENDING_REJECTED": return new LendingPanel(currentUser, LendingPanel.V_REJECTED);
             case "REPORTS":   return new ReportsPanel(currentUser);
+            case "INBOX":     return new InboxPanel(currentUser, this::openEvaluate);
+            case "MM_BORROW": return new MoneyMarketBorrowingPanel(currentUser);
+            case "MM_LIST":   return new MoneyMarketListPanel(currentUser);
+            case "MM_LEND":      return new MoneyMarketLendingPanel(currentUser);
+            case "MM_LEND_LIST": return new MoneyMarketLendingListPanel(currentUser);
             default:          return placeholder(key, "Tanımsız ekran.");
         }
     }

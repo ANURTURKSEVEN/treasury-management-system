@@ -55,6 +55,9 @@ public class CustomerDashboardFrame extends JFrame {
         titles.put("BORROWING", "📥 Borrowing");
         titles.put("LENDING", "📤 Lending");
         titles.put("REPORTS", "📊 Raporlar");
+        titles.put("CINBOX_MSG", "📬 Mesajlar");
+        titles.put("CINBOX_NOTIF", "🔔 Bildirimler");
+        titles.put("MM_MINE", "💹 Para Piyasası İşlemlerim");
 
         setTitle("Müşteri Paneli - " + customer.getCustomerName());
         setDefaultCloseOperation(EXIT_ON_CLOSE);
@@ -121,10 +124,10 @@ public class CustomerDashboardFrame extends JFrame {
 
         bellButton = new JButton("Bildirimler");
         bellButton.setIcon(com.gtech.treasury.util.IconLoader.get("bell", 18));
-        bellButton.setToolTipText("Bildirimler");
+        bellButton.setToolTipText("İşlem bildirimleri");
         bellButton.setFocusable(false);
         bellButton.setFont(bellButton.getFont().deriveFont(Font.BOLD, 13f));
-        bellButton.addActionListener(e -> openNotificationCenter());
+        bellButton.addActionListener(e -> openNotifications());
         right.add(bellButton);
 
         JLabel who = new JLabel(customer.getCustomerName() + " " + customer.getSurname()
@@ -137,11 +140,36 @@ public class CustomerDashboardFrame extends JFrame {
         return bar;
     }
 
-    /** Çan rozetini okunmamış sayısına göre günceller. */
+    /** Çan rozeti: Bildirimler kutusu her şeyi içerdiği için okunmamış bildirim + mesaj toplamı. */
     private void refreshBell() {
         if (bellButton == null) return;
         int n = new com.gtech.treasury.dao.NotificationDAO().unreadCount(customer.getCustomerNo());
-        bellButton.setText(n > 0 ? "Bildirimler (" + n + ")" : "Bildirimler");
+        int mn = new com.gtech.treasury.dao.MessageDAO().customerUnreadCount(customer.getCustomerNo());
+        int total = n + mn;
+        bellButton.setText(total > 0 ? "Bildirimler (" + total + ")" : "Bildirimler");
+    }
+
+    /** İşlem bildirimleri sekmesini açar (çandan). */
+    private void openNotifications() {
+        openTab("CINBOX_NOTIF", "🔔 Bildirimler");
+        refreshBell();
+    }
+
+    /** Banka mesajları sekmesini açar (yan menüden). */
+    private void openMessages() {
+        openTab("CINBOX_MSG", "📬 Mesajlar");
+        refreshBell();
+    }
+
+    /** Bildirimler'den bir mesaja tıklanınca: Mesajlar ekranını açıp o mesajı seçer. */
+    private void openMessageInMessages(com.gtech.treasury.model.Message m) {
+        openTab("CINBOX_MSG", "📬 Mesajlar");
+        Component c = openTabs.get("CINBOX_MSG");
+        if (c instanceof CustomerInboxPanel) {
+            final CustomerInboxPanel p = (CustomerInboxPanel) c;
+            SwingUtilities.invokeLater(() -> p.focusMessage(m.getId()));   // olası reload sonrası odakla
+        }
+        refreshBell();
     }
 
     /** Bildirim merkezi: geçmiş bildirimler, okundu/okunmadı, detay ve İtiraz Et. */
@@ -225,6 +253,11 @@ public class CustomerDashboardFrame extends JFrame {
                     .create(customer.getCustomerNo(), n.getTitle(), reason.trim());
             if (did > 0) {
                 dao.markRead(n.getId());
+                new com.gtech.treasury.dao.MessageDAO().send(
+                        "CUSTOMER:" + customer.getCustomerNo(), "STAFF",
+                        "İtiraz: " + n.getTitle(),
+                        "İşleme itiraz edildi.\nMüşteri gerekçesi:\n" + reason.trim(),
+                        "DISPUTE", String.valueOf(did));
                 refreshBell();
                 JOptionPane.showMessageDialog(dlg,
                         "İtirazınız (No: " + did + ") bankaya iletildi.\n"
@@ -286,6 +319,15 @@ public class CustomerDashboardFrame extends JFrame {
                     new DefaultMutableTreeNode(new MenuItem("LENDING_REJECTED", "Reddedilenler"))));
         }
         addGroup(root, krediMevduat);
+
+        // Para Piyasası İşlemlerim (salt-okunur gözlem + borçlu olunan işlemi ödeme)
+        root.add(new DefaultMutableTreeNode(new MenuItem("MM_MINE", "Para Piyasası İşlemlerim")));
+
+        // Mesajlar & Bildirimler (banka mesajları ile işlem bildirimleri ayrı)
+        DefaultMutableTreeNode mesajlar = group("📬 Mesajlar",
+                new DefaultMutableTreeNode(new MenuItem("CINBOX_MSG", "Mesajlar")),
+                new DefaultMutableTreeNode(new MenuItem("CINBOX_NOTIF", "Bildirimler")));
+        root.add(mesajlar);
 
         return treeSidebar(root);
     }
@@ -388,6 +430,7 @@ public class CustomerDashboardFrame extends JFrame {
         if (label.contains("Kur")) return "fx";
         if (label.contains("İşlem")) return "transactions";
         if (label.contains("Kredi") || label.contains("Mevduat")) return "lending";
+        if (label.contains("Mesaj")) return "bell";
         return null;
     }
 
@@ -441,6 +484,18 @@ public class CustomerDashboardFrame extends JFrame {
             case "FX_TRADE":    return new SpotTradePanel(true, customer, null);   // müşteri kendi adına al/sat
             case "FX_WATCH":    return new SpotRatePanel(false, null);             // salt gözlem
             case "REPORTS":     return new CustomerReportsPanel(customer);
+            case "MM_MINE":     return new CustomerMoneyMarketPanel(customer, this::refreshBell);
+            case "CINBOX":      return new CustomerInboxPanel(customer, this::refreshBell);
+            case "CINBOX_MSG":  return new CustomerInboxPanel(customer, this::refreshBell,
+                                        CustomerInboxPanel.MODE_MESSAGES);
+            case "CINBOX_NOTIF": {
+                // Bildirimler: her şey (işlem bildirimleri + banka mesajları) burada listelenir.
+                // Bir MESAJA tıklanınca Mesajlar ekranına geçilir; işlem bildirimleri burada kalır.
+                CustomerInboxPanel p = new CustomerInboxPanel(customer, this::refreshBell,
+                        CustomerInboxPanel.MODE_ALL);
+                p.setOnOpenMessage(this::openMessageInMessages);
+                return p;
+            }
             default:            return placeholder(titles.getOrDefault(key, key),
                                      "İşlemleriniz yakında burada listelenecek.");
         }

@@ -47,6 +47,11 @@ public class ReportsPanel extends JPanel {
         LABELS.put("BANK_ADJUST", "Banka Kasası Düzenleme");
         LABELS.put("LOAN_APPLIED", "Kredi Başvurusu");
         LABELS.put("LOAN_GIVEN", "Kredi Onay/Kullanım");
+        LABELS.put("LOAN_APPROVED", "Kredi Onayı");
+        LABELS.put("LOAN_DISBURSED", "Kredi Kullandırım");
+        LABELS.put("MM_BORROW_CREATE", "PP Borçlanma");
+        LABELS.put("MM_BORROW_MATURE", "PP Borçlanma Vade");
+        LABELS.put("MM_BORROW_CANCEL", "PP Borçlanma İptal");
         LABELS.put("LOAN_REJECTED", "Kredi Reddi");
         LABELS.put("LOAN_INSTALLMENT", "Kredi Taksit Ödemesi");
         LABELS.put("LOAN_REPAID", "Kredi Geri Ödeme");

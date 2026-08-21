@@ -5,8 +5,11 @@ import com.gtech.treasury.dao.LendingDAO;
 import com.gtech.treasury.dao.NotificationDAO;
 import com.gtech.treasury.model.OverdueInstallment;
 import com.gtech.treasury.model.ActivityLog;
+import com.gtech.treasury.dao.MoneyMarketBorrowingDAO;
+import com.gtech.treasury.model.MoneyMarketBorrowing;
 import com.gtech.treasury.util.OverdueReport;
 import com.gtech.treasury.util.CashflowReport;
+import com.gtech.treasury.util.MmPositionReport;
 import java.io.File;
 import java.time.LocalDate;
 import java.util.List;
@@ -27,9 +30,9 @@ public class EodOverdueJob {
             // 1) Geciken taksitleri çek (daha önce yazdığımız DAO metodu)
             List<OverdueInstallment> rows = new LendingDAO().getOverdue();
 
-            // 2) Masaüstünde iki ayrı klasör hazırla (yoksa oluşturulur)
-            File gecikenlerDir = new File("C:/Users/gtstaj0079/Desktop/TreasuryRaporlar/gecikenler");
-            File nakitDir      = new File("C:/Users/gtstaj0079/Desktop/TreasuryRaporlar/nakit_akis");
+            // 2) Proje klasörü içinde iki ayrı klasör hazırla (yoksa oluşturulur)
+            File gecikenlerDir = new File("reports/gecikenler");
+            File nakitDir      = new File("reports/nakit_akis");
             gecikenlerDir.mkdirs();
             nakitDir.mkdirs();
 
@@ -58,8 +61,21 @@ public class EodOverdueJob {
             ActivityLogDAO.log("EOD_CASHFLOW",
                     "Gün sonu nakit akış raporu üretildi: " + hareketler.size() + " hareket -> " + nakitOut.getPath());
 
+            // 7) Para piyasası pozisyon (açık borçlanmalar / likidite) raporu
+            File mmDir = new File("reports/mm_pozisyon");
+            mmDir.mkdirs();
+            List<MoneyMarketBorrowing> mmActive = new MoneyMarketBorrowingDAO().getByStatus("ACTIVE");
+            File mmOut = new File(mmDir, "mm_pozisyon_" + bugun + ".xlsx");
+            MmPositionReport.writeExcel(mmOut, mmActive);
+            new NotificationDAO().addForStaff(
+                    "Gün sonu: para piyasası pozisyonu",
+                    mmActive.size() + " açık borçlanma. Rapor: " + mmOut.getName(),
+                    "EOD_MM_POSITION", null);
+            ActivityLogDAO.log("EOD_MM_POSITION",
+                    "Gün sonu MM pozisyon raporu üretildi: " + mmActive.size() + " açık deal -> " + mmOut.getPath());
+
             System.out.println("[BATCH] Tamam. Geciken: " + rows.size()
-            + " satir, Nakit akis: " + hareketler.size() + " hareket.");
+            + " satir, Nakit akis: " + hareketler.size() + " hareket, MM acik: " + mmActive.size() + " deal.");
         } catch (Exception e) {
             System.err.println("[BATCH] HATA: " + e.getMessage());
             e.printStackTrace();

@@ -69,10 +69,11 @@ public class AccountsPanel extends JPanel {
         table.setRowHeight(28);
         table.setRowSorter(sorter);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        table.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override public void mouseClicked(java.awt.event.MouseEvent e) { if (e.getClickCount() == 2) doDetail(); }
+        });
         // Ana ekranda sadece Hesap No, Müşteri No, Açılış Tarihi görünür (gerisi pop-up'ta)
         hideColumn("Müşteri");
-        hideColumn("Tür");
-        hideColumn("Döviz");
         hideColumn("Bakiye");
         hideColumn("Açılış Saati");
 
@@ -240,6 +241,9 @@ public class AccountsPanel extends JPanel {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton refresh = new JButton("Yenile");
         refresh.addActionListener(e -> loadAccounts());
+        JButton detail = new JButton("Detay");
+        detail.addActionListener(e -> doDetail());
+        panel.add(detail);
         panel.add(refresh);
         if (canManage) {
             JButton balance = new JButton("Para Yatır / Çek");
@@ -266,6 +270,12 @@ public class AccountsPanel extends JPanel {
         int viewRow = table.getSelectedRow();
         if (viewRow < 0) return null;
         return tableModel.getAt(table.convertRowIndexToModel(viewRow));
+    }
+
+    private void doDetail() {
+        Account a = selected();
+        if (a == null) { Notify.warning(this, "Detay için bir hesap seçin."); return; }
+        new AccountDetailDialog(SwingUtilities.getWindowAncestor(this), a).setVisible(true);
     }
 
     // ---- Yeni hesap ----

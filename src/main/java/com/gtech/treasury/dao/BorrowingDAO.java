@@ -1,6 +1,7 @@
 package com.gtech.treasury.dao;
 
 import com.gtech.treasury.model.Account;
+import com.gtech.treasury.model.ActivityLog;
 import com.gtech.treasury.model.Deposit;
 import com.gtech.treasury.util.DBConnection;
 import com.gtech.treasury.util.Session;
@@ -64,16 +65,21 @@ public class BorrowingDAO {
         String cur = target.getCurrency();
         LocalDate start = LocalDate.now(), maturity = start.plusMonths(months); // onayda güncellenir
 
+        int newId = 0;   // eklenen başvurunun id'si (mesaj referansı için)
         try (Connection conn = DBConnection.getConnection();
              PreparedStatement ps = conn.prepareStatement(
                      "INSERT INTO borrowing (customer_id, account_id, contract_type, currency, amount, interest_rate, "
                    + "term_months, interest_amount, total_return, start_date, maturity_date, status) "
-                   + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2)")) {
+                   + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2)",
+                     java.sql.Statement.RETURN_GENERATED_KEYS)) {
             ps.setInt(1, target.getCustomerId()); ps.setInt(2, target.getAccountId());
             ps.setString(3, contract.name()); ps.setString(4, cur); ps.setDouble(5, amount);
             ps.setDouble(6, rate); ps.setInt(7, months); ps.setDouble(8, interest); ps.setDouble(9, total);
             ps.setString(10, start.toString()); ps.setString(11, maturity.toString());
             ps.executeUpdate();
+            try (ResultSet gk = ps.getGeneratedKeys()) {   // yeni satırın id'sini al
+                if (gk.next()) newId = gk.getInt(1);
+            }
         } catch (SQLException e) {
             System.err.println("Mevduat başvuru hatası: " + e.getMessage());
             ErrorLogDAO.log(e, "Mevduat başvuru");
@@ -81,7 +87,19 @@ public class BorrowingDAO {
         }
         ActivityLogDAO.log("DEPOSIT_APPLIED", target.getCustomerNo(), amount, cur,
                 "Vadeli mevduat başvurusu: " + String.format("%,.2f %s", amount, cur) + " / " + months + " ay",
-                contract.label + " | Faiz: %" + rate + " | Onay bekliyor.");
+                contract.label + " | Faiz: %" + rate + " | Onay bekliyor. | Mevduat #" + newId);
+        // Banka gelen kutusuna onay mesajı düşür
+        new MessageDAO().send(
+                "CUSTOMER:" + target.getCustomerNo(),
+                "STAFF",
+                "Vadeli mevduat başvurusu — Müşteri " + target.getCustomerNo(),
+                "Müşteri No: " + target.getCustomerNo()
+                        + "\nTutar: " + String.format("%,.2f %s", amount, cur)
+                        + "\nVade: " + months + " ay"
+                        + "\nSözleşme: " + contract.label + "   |   Faiz: %" + rate
+                        + "\n\nBu başvuruyu 'Mevduat Onay' ekranından değerlendirebilirsiniz.",
+                "DEPOSIT_APPROVAL",
+                String.valueOf(newId));
         return null;
     }
 
@@ -114,14 +132,16 @@ public class BorrowingDAO {
                 if (bankAccId == null) { conn.rollback(); return "Banka " + cur + " kasası yok."; }
                 move(conn, upd, +amount, bankAccId);
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE borrowing SET status = 1, start_date = ?, maturity_date = ? WHERE id = ?")) {
-                    ps.setString(1, start.toString()); ps.setString(2, maturity.toString()); ps.setInt(3, id);
+                        "UPDATE borrowing SET status = 1, start_date = ?, maturity_date = ?, "
+                      + "approved_by = ?, approved_at = NOW() WHERE id = ?")) {
+                    ps.setString(1, start.toString()); ps.setString(2, maturity.toString());
+                    ps.setString(3, Session.getCurrentUsername()); ps.setInt(4, id);
                     ps.executeUpdate();
                 }
                 conn.commit();
                 ActivityLogDAO.log("DEPOSIT_OPEN", custNo, amount, cur,
                         "Vadeli mevduat onaylandı ve açıldı: " + String.format("%,.2f %s", amount, cur) + " / " + months + " ay",
-                        "Vade sonu getiri: " + String.format("%,.2f %s", total, cur) + " | Vade: " + maturity);
+                        "Vade sonu getiri: " + String.format("%,.2f %s", total, cur) + " | Vade: " + maturity + " | Mevduat #" + id);
                 CustomerSnapshotDAO.record(custId);
                 TreasurySnapshotDAO.record();
                 notifyIfByStaff(custNo, "Vadeli mevduat onaylandı",
@@ -154,7 +174,7 @@ public class BorrowingDAO {
                 if (ps.executeUpdate() == 0) return "Başvuru güncellenemedi.";
             }
             ActivityLogDAO.log("DEPOSIT_REJECTED", custNo, amount, cur,
-                    "Vadeli mevduat başvurusu reddedildi", "Sebep: " + reason);
+                    "Vadeli mevduat başvurusu reddedildi", "Sebep: " + reason + " | Mevduat #" + id);
             notifyIfByStaff(custNo, "Vadeli mevduat başvurusu reddedildi", "Sebep: " + reason);
             return null;
         } catch (SQLException e) {
@@ -298,12 +318,37 @@ public class BorrowingDAO {
     private static final String BASE =
             "SELECT b.id, b.customer_id, c.customer_no, CONCAT(c.customer_name,' ',IFNULL(c.surname,'')) AS musteri, "
           + "a.account_no, b.contract_type, b.currency, b.amount, b.interest_rate, b.term_months, "
-          + "b.interest_amount, b.total_return, b.status, b.close_type, b.start_date, b.maturity_date "
+          + "b.interest_amount, b.total_return, b.status, b.close_type, b.start_date, b.maturity_date, "
+          + "b.approved_by, b.approved_at "
           + "FROM borrowing b JOIN customer c ON b.customer_id = c.customer_id "
           + "JOIN account a ON b.account_id = a.account_id ";
 
     public List<Deposit> getByCustomer(int customerId) { return query(BASE + "WHERE b.customer_id = ? ORDER BY b.id DESC", customerId); }
     public List<Deposit> getAll() { return query(BASE + "ORDER BY b.id DESC", 0); }
+
+    /** Mevduat ile ilgili aktivite kayıtları (detay ekranı — Hareketler). */
+    public List<ActivityLog> depositActivity(int id) {
+        String key = "%Mevduat #" + id + "%";
+        String sql = "SELECT id, action_type, username, customer_no, amount, currency, description, details, created_at "
+                   + "FROM activity_log WHERE description LIKE ? OR details LIKE ? ORDER BY id DESC";
+        List<ActivityLog> list = new ArrayList<>();
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, key); ps.setString(2, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new ActivityLog(
+                            rs.getInt("id"), rs.getString("action_type"), rs.getString("username"),
+                            rs.getInt("customer_no"), rs.getDouble("amount"), rs.getString("currency"),
+                            rs.getString("description"), rs.getString("details"),
+                            String.valueOf(rs.getTimestamp("created_at"))));
+                }
+            }
+        } catch (SQLException e) {
+            ErrorLogDAO.log(e, "Mevduat hareketleri");
+        }
+        return list;
+    }
 
     private List<Deposit> query(String sql, int customerId) {
         List<Deposit> list = new ArrayList<>();
@@ -318,7 +363,8 @@ public class BorrowingDAO {
                             rs.getDouble("amount"), rs.getDouble("interest_rate"), rs.getInt("term_months"),
                             rs.getDouble("interest_amount"), rs.getDouble("total_return"), rs.getInt("status"),
                             rs.getString("close_type"),
-                            String.valueOf(rs.getDate("start_date")), String.valueOf(rs.getDate("maturity_date"))));
+                            String.valueOf(rs.getDate("start_date")), String.valueOf(rs.getDate("maturity_date")),
+                            rs.getString("approved_by"), String.valueOf(rs.getTimestamp("approved_at"))));
                 }
             }
         } catch (SQLException e) {

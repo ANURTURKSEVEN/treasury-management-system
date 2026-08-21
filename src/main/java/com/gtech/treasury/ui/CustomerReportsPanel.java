@@ -51,8 +51,10 @@ public class CustomerReportsPanel extends JPanel {
         add(new JScrollPane(table), BorderLayout.CENTER);
 
         // Tarih aralığı kutuları (format: yyyy-MM-dd — search() bunu bekliyor)
-        JTextField baslangicField = new JTextField(LocalDate.now().withDayOfMonth(1).toString(), 10);
-        JTextField bitisField     = new JTextField(LocalDate.now().toString(), 10);
+        com.gtech.treasury.util.DatePicker baslangicField =
+                new com.gtech.treasury.util.DatePicker(LocalDate.now().withDayOfMonth(1).toString());
+        com.gtech.treasury.util.DatePicker bitisField =
+                new com.gtech.treasury.util.DatePicker(LocalDate.now().toString());
 
         JButton refresh = new JButton("Yenile");
         refresh.addActionListener(e -> loadData());

@@ -18,16 +18,19 @@ public class Deposit {
     private final String closeType;      // VADE / ERKEN / null
     private final String startDate;
     private final String maturityDate;
+    private final String approvedBy;
+    private final String approvedAt;
 
     public Deposit(int id, int customerId, int customerNo, String customerName, long accountNo,
                    String contractType, String currency, double amount, double interestRate, int termMonths,
                    double interestAmount, double totalReturn, int status, String closeType,
-                   String startDate, String maturityDate) {
+                   String startDate, String maturityDate, String approvedBy, String approvedAt) {
         this.id = id; this.customerId = customerId; this.customerNo = customerNo; this.customerName = customerName;
         this.accountNo = accountNo; this.contractType = contractType; this.currency = currency;
         this.amount = amount; this.interestRate = interestRate; this.termMonths = termMonths;
         this.interestAmount = interestAmount; this.totalReturn = totalReturn; this.status = status;
         this.closeType = closeType; this.startDate = startDate; this.maturityDate = maturityDate;
+        this.approvedBy = approvedBy; this.approvedAt = approvedAt;
     }
 
     public int getId() { return id; }
@@ -47,6 +50,8 @@ public class Deposit {
     public String getCloseType() { return closeType; }
     public String getStartDate() { return startDate; }
     public String getMaturityDate() { return maturityDate; }
+    public String getApprovedBy() { return approvedBy; }
+    public String getApprovedAt() { return approvedAt; }
 
     public String getStatusText() {
         if (status == 2) return "Onay Bekliyor";

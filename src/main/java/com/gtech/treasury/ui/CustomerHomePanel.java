@@ -176,6 +176,8 @@ public class CustomerHomePanel extends JPanel {
         texts.add(Box.createVerticalStrut(4));
         texts.add(sub);
         card.add(texts, BorderLayout.WEST);
+        // card() boşken max yüksekliği küçük sabitliyor; içerik eklendikten sonra düzelt (yoksa metin kırpılır)
+        card.setMaximumSize(new Dimension(Integer.MAX_VALUE, card.getPreferredSize().height));
         return card;
     }
 

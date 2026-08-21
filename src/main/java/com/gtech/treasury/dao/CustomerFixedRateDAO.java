@@ -72,7 +72,7 @@ public class CustomerFixedRateDAO {
     /** Tüm aktif fix kurlar (müşteri adıyla) — admin listesi. */
     public List<CustomerFixedRate> getAllActive() {
         String sql = "SELECT f.id, f.customer_no, f.currency, f.buy_rate, f.sell_rate, f.created_at, "
-                   + "CONCAT(c.customer_name, ' ', c.surname) AS ad "
+                   + "TRIM(CONCAT(c.customer_name, ' ', COALESCE(c.surname, ''))) AS ad "
                    + "FROM customer_fixed_rate f "
                    + "LEFT JOIN customer c ON c.customer_no = f.customer_no "
                    + "WHERE f.active = 1 ORDER BY f.created_at DESC";

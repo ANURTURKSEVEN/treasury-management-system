@@ -42,6 +42,12 @@ public class CustomerPicker extends JPanel {
 
     /** Dışarıdan programatik seçim (ör. tablo satırından). */
     public void setSelected(Customer c) { if (c != null) apply(c); }
+    
+    /** Müşteri numarasına göre programatik seçim (ör. mesaja yanıt verirken). */
+    public void selectByNo(int no) {
+        java.util.List<Customer> res = customerDAO.searchByCriteria(String.valueOf(no), "", "", "", "");
+        if (!res.isEmpty()) apply(res.get(0));
+    }
 
     private void searchByNo() {
         String no = noField.getText().trim();

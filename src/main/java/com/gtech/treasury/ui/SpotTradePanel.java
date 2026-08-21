@@ -35,6 +35,7 @@ public class SpotTradePanel extends JPanel {
     private final CustomerDAO customerDAO = new CustomerDAO();
     private final AccountDAO accountDAO = new AccountDAO();
     private final CustomerFixedRateDAO fixedRateDAO = new CustomerFixedRateDAO();
+    private final com.gtech.treasury.dao.CustomerFXFixingDAO fixingDAO = new com.gtech.treasury.dao.CustomerFXFixingDAO();
 
     private final boolean canTrade;
     private final Customer fixedCustomer;   // müşteri girişiyse dolu
@@ -195,6 +196,11 @@ public class SpotTradePanel extends JPanel {
             save.addActionListener(e -> saveTrade());
             gbc.gridx = 0; gbc.gridy = row++; gbc.gridwidth = 2;
             card.add(save, gbc);
+
+            JButton byRef = new JButton("Fix Referansı ile İşle");
+            byRef.addActionListener(e -> executeByReference());
+            gbc.gridx = 0; gbc.gridy = row++; gbc.gridwidth = 2;
+            card.add(byRef, gbc);
         }
 
         currencyCombo.addActionListener(e -> fillRateFromSelection());
@@ -204,6 +210,36 @@ public class SpotTradePanel extends JPanel {
         rateSourceCombo.addActionListener(e -> { if (!refreshingRate) fillRateFromSelection(); });
 
         return card;
+    }
+
+    /** Bir FX fix referansıyla, o referanstaki kur/tutar/yön ile spot işlemi gerçekleştirir. */
+    private void executeByReference() {
+        String ref = JOptionPane.showInputDialog(this,
+                "Fix referans numarası (ör. FX-20260820-000001):", "Fix Referansı ile İşle",
+                JOptionPane.PLAIN_MESSAGE);
+        if (ref == null || ref.trim().isEmpty()) return;
+        com.gtech.treasury.model.CustomerFXFixing d = fixingDAO.getByReference(ref.trim());
+        if (d == null) { Notify.warning(this, "Bu referansla bir fix bulunamadı: " + ref.trim()); return; }
+        if (!"FIXED".equals(d.getStatus())) {
+            Notify.warning(this, "Bu referans işleme uygun değil (durum: " + d.getStatusText() + ")."); return;
+        }
+        if (fixedCustomer != null && d.getCustomerNo() != fixedCustomer.getCustomerNo()) {
+            Notify.warning(this, "Bu referans size ait değil."); return;
+        }
+        double rate = d.isBankSell() ? d.getCustomerSellRate() : d.getCustomerBuyRate();
+        String yon = d.isBankSell() ? "Döviz ALIŞ (size döviz satılır)" : "Döviz SATIŞ (sizden döviz alınır)";
+        int ans = JOptionPane.showConfirmDialog(this,
+                d.getReferenceNo() + " referansı ile işlem:\n\n"
+                        + yon + "\n"
+                        + "Tutar: " + String.format("%,.2f %s", d.getAmount(), d.getCurrency()) + "\n"
+                        + "Kur: " + String.format("%,.6f", rate) + "\n"
+                        + "TRY karşılığı: " + String.format("%,.2f TRY", d.getAmount() * rate) + "\n\nOnaylıyor musunuz?",
+                "Referansla İşlem", JOptionPane.YES_NO_OPTION);
+        if (ans != JOptionPane.YES_OPTION) return;
+        String err = fixingDAO.execute(d.getId());
+        if (err != null) { Notify.warning(this, err); return; }
+        Notify.info(this, "İşlem gerçekleşti (" + d.getReferenceNo() + "). Hesap bakiyeleriniz güncellendi.");
+        loadData(); fillRateFromSelection(); loadHistory();
     }
 
     private JComponent buildHistory() {

@@ -20,18 +20,27 @@ public class Lending {
     private final String startDate;
     private final String maturityDate;
     private final int autoPay;            // 1 otomatik ödeme talimatı / 0 manuel
+    private final String approvedBy;      // onaylayan personel
+    private final String approvedAt;      // onay tarihi
+    private final String disbursedAt;     // kullandırım tarihi
 
     public Lending(int id, int customerId, int customerNo, String customerName, long accountNo, String loanType,
                    String currency, double amount, double interestRate, int termMonths,
                    double monthlyPayment, double totalDue, int status, String rejectReason,
-                   String startDate, String maturityDate, int autoPay) {
+                   String startDate, String maturityDate, int autoPay,
+                   String approvedBy, String approvedAt, String disbursedAt) {
         this.id = id; this.customerId = customerId; this.customerNo = customerNo; this.customerName = customerName;
         this.accountNo = accountNo; this.loanType = loanType; this.currency = currency;
         this.amount = amount; this.interestRate = interestRate; this.termMonths = termMonths;
         this.monthlyPayment = monthlyPayment; this.totalDue = totalDue; this.status = status;
         this.rejectReason = rejectReason; this.startDate = startDate; this.maturityDate = maturityDate;
         this.autoPay = autoPay;
+        this.approvedBy = approvedBy; this.approvedAt = approvedAt; this.disbursedAt = disbursedAt;
     }
+
+    public String getApprovedBy()  { return approvedBy; }
+    public String getApprovedAt()  { return approvedAt; }
+    public String getDisbursedAt() { return disbursedAt; }
 
     public boolean isAutoPay() { return autoPay == 1; }
     public String getPaymentModeText() { return autoPay == 1 ? "Otomatik" : "Manuel"; }
@@ -59,6 +68,7 @@ public class Lending {
             case 1: return "Aktif";
             case 2: return "Reddedildi";
             case 3: return "Kapandı";
+            case 4: return "Onaylandı (Kullandırılacak)";
             default: return "-";
         }
     }

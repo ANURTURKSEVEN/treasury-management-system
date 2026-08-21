@@ -132,13 +132,16 @@ public class LendingDAO {
         // Başvuru anındaki KRS/KDS sonucu — denetim izi için dondurulur
         Evaluation ev = evaluate(target.getCustomerId(), type, amount, rate, months);
         com.gtech.treasury.util.CreditScoreService.Result cs =
-                com.gtech.treasury.util.CreditScoreService.evaluate(target.getCustomerId(), ev, amount);
+                com.gtech.treasury.util.CreditScoreService.evaluate(
+                        target.getCustomerId(), target.getCustomerNo(), ev, amount);
 
+        int newId = 0;   // eklenen başvurunun id'si (mesaj referansı için)
         try (Connection conn = DBConnection.getConnection();
              PreparedStatement ps = conn.prepareStatement(
                      "INSERT INTO lending (customer_id, account_id, loan_type, currency, amount, interest_rate, "
                    + "term_months, monthly_payment, total_due, status, krs_score, krs_band, kds_decision, evaluated_at) "
-                   + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NOW())")) {
+                   + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NOW())",
+                     java.sql.Statement.RETURN_GENERATED_KEYS)) {
             ps.setInt(1, target.getCustomerId());
             ps.setInt(2, target.getAccountId());
             ps.setString(3, type.name());
@@ -152,6 +155,9 @@ public class LendingDAO {
             ps.setString(11, cs.krsBand);
             ps.setString(12, cs.kdsDecision);
             ps.executeUpdate();
+            try (ResultSet gk = ps.getGeneratedKeys()) {   // yeni satırın id'sini al
+                if (gk.next()) newId = gk.getInt(1);
+            }
         } catch (SQLException e) {
             System.err.println("Kredi başvurusu hatası: " + e.getMessage());
             ErrorLogDAO.log(e, "Kredi başvuru");
@@ -161,13 +167,61 @@ public class LendingDAO {
                 type.label + " başvurusu: " + String.format("%,.2f %s", amount, target.getCurrency()) + " / " + months + " ay",
                 "Değerlendirme bekliyor. | KRS: " + cs.krsScore + " (" + cs.krsBand + ")"
                         + " | KDS: " + cs.kdsDecision);
+        // Banka gelen kutusuna onay mesajı düşür
+        new MessageDAO().send(
+                "CUSTOMER:" + target.getCustomerNo(),
+                "STAFF",
+                type.label + " başvurusu — Müşteri " + target.getCustomerNo(),
+                "Müşteri No: " + target.getCustomerNo()
+                        + "\nKredi türü: " + type.label
+                        + "\nTutar: " + String.format("%,.2f %s", amount, target.getCurrency())
+                        + "\nVade: " + months + " ay"
+                        + "\nKRS notu: " + cs.krsScore + " (" + cs.krsBand + ")   |   KDS önerisi: " + cs.kdsDecision
+                        + "\n\nBu başvuruyu 'Kredi Onay' ekranından değerlendirebilirsiniz.",
+                "LOAN_APPROVAL",
+                String.valueOf(newId));
         return null;
     }
 
-    // ---- Onay (admin): parayı kullandır ----
-    public String approve(int lendingId) {
+    // ---- Onay (admin): sadece ONAYLAR, para VERMEZ (status 0 -> 4) ----
+    public String approve(int lendingId) { return approve(lendingId, null); }
+
+    /** overrideNote: KDS önerisi ONAYLA değilken onaya devam gerekçesi (denetim izi). */
+    public String approve(int lendingId, String overrideNote) {
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "UPDATE lending SET status = 4, approved_by = ?, approved_at = NOW() WHERE id = ? AND status = 0")) {
+            ps.setString(1, Session.getCurrentUsername());
+            ps.setInt(2, lendingId);
+            if (ps.executeUpdate() == 0) return "Bekleyen başvuru bulunamadı.";
+        } catch (SQLException e) {
+            ErrorLogDAO.log(e, "Kredi onay");
+            return "İşlem sırasında hata: " + e.getMessage();
+        }
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement("SELECT customer_id FROM lending WHERE id = ?")) {
+            ps.setInt(1, lendingId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    int custNo = customerNo(rs.getInt(1));
+                    String detail = "Kullandırım bekliyor. Onaylayan: " + Session.getCurrentUsername()
+                            + (overrideNote != null && !overrideNote.isBlank()
+                                ? " | KDS override gerekçesi: " + overrideNote : "");
+                    ActivityLogDAO.log("LOAN_APPROVED", custNo, 0, null,
+                            "Kredi başvurusu onaylandı (Kredi #" + lendingId + ")",
+                            detail);
+                    new NotificationDAO().add(custNo, "Kredi başvurunuz ONAYLANDI",
+                            "Başvurunuz onaylandı; kullandırım (para aktarımı) bankaca yapıldığında bilgilendirileceksiniz. (Kredi #" + lendingId + ")");
+                }
+            }
+        } catch (SQLException ignored) { }
+        return null;
+    }
+
+    // ---- Kullandırım (admin): parayı kullandır (status 4 -> 1) ----
+    public String disburse(int lendingId) {
         String sel = "SELECT customer_id, account_id, currency, amount, term_months, monthly_payment, total_due "
-                   + "FROM lending WHERE id = ? AND status = 0";
+                   + "FROM lending WHERE id = ? AND status = 4";
         String selBank = "SELECT a.account_id, a.balance FROM account a "
                        + "JOIN customer c ON a.customer_id = c.customer_id AND c.customer_no = ? "
                        + "WHERE a.currency = ? AND a.status = 1 ORDER BY a.account_id LIMIT 1";
@@ -208,8 +262,9 @@ public class LendingDAO {
                 }
                 LocalDate start = LocalDate.now(), maturity = start.plusMonths(months);
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE lending SET status = 1, start_date = ?, maturity_date = ? WHERE id = ?")) {
-                    ps.setString(1, start.toString()); ps.setString(2, maturity.toString()); ps.setInt(3, lendingId);
+                        "UPDATE lending SET status = 1, start_date = ?, maturity_date = ?, disbursed_at = ? WHERE id = ?")) {
+                    ps.setString(1, start.toString()); ps.setString(2, maturity.toString());
+                    ps.setString(3, start.toString()); ps.setInt(4, lendingId);
                     ps.executeUpdate();
                 }
                 // Taksit planı: her ay bir taksit (son taksit yuvarlama farkını taşır)
@@ -229,14 +284,14 @@ public class LendingDAO {
                 conn.commit();
 
                 int custNo = customerNo(custId);
-                ActivityLogDAO.log("LOAN_GIVEN", custNo, amount, cur,
-                        "Kredi onaylandı ve kullandırıldı: " + String.format("%,.2f %s", amount, cur),
-                        "Kredi #" + lendingId + " | Vade: " + maturity);
+                ActivityLogDAO.log("LOAN_DISBURSED", custNo, amount, cur,
+                        "Kredi kullandırıldı: " + String.format("%,.2f %s", amount, cur),
+                        "Kredi #" + lendingId + " | Vade: " + maturity + " | Kullandıran: " + Session.getCurrentUsername());
                 CustomerSnapshotDAO.record(custId);
                 TreasurySnapshotDAO.record();
                 new NotificationDAO().add(custNo,
-                        "Kredi başvurunuz ONAYLANDI",
-                        "Hesabınıza " + String.format("%,.2f %s", amount, cur) + " kredi tanımlandı. (Kredi #" + lendingId + ")");
+                        "Krediniz kullandırıldı",
+                        "Hesabınıza " + String.format("%,.2f %s", amount, cur) + " kredi tutarı aktarıldı. (Kredi #" + lendingId + ")");
                 return null;
             } catch (SQLException e) { conn.rollback(); throw e; }
         } catch (SQLException e) {
@@ -403,6 +458,87 @@ public class LendingDAO {
             ErrorLogDAO.log(e, "Taksit tarihi güncelleme");
             return "Güncellenemedi: " + e.getMessage();
         }
+    }
+
+    /** Bir kredinin ödenecek sıradaki taksitinin ödeme önizlemesi (salt-okunur; para hareketi yok). */
+    public static class PayPreview {
+        public boolean none = true;
+        public int installmentId, seqNo;
+        public String dueDate, currency;
+        public long accountNo;
+        public double baseAmount, lateFee, totalCharge, remainingBefore;
+        public long daysLate;
+    }
+
+    /** Sıradaki ödenmemiş taksit için tutar + gecikme faizi + kalan borç önizlemesi. */
+    public PayPreview previewNextInstallment(int lendingId) {
+        ensureInstallments(lendingId);
+        PayPreview p = new PayPreview();
+        try (Connection conn = DBConnection.getConnection()) {
+            double rate; String cur; long accNo; int lStatus;
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT l.interest_rate, l.currency, a.account_no, l.status "
+                  + "FROM lending l JOIN account a ON l.account_id = a.account_id WHERE l.id = ?")) {
+                ps.setInt(1, lendingId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) return p;
+                    rate = rs.getDouble("interest_rate"); cur = rs.getString("currency");
+                    accNo = rs.getLong("account_no"); lStatus = rs.getInt("status");
+                }
+            }
+            if (lStatus != 1) return p;   // yalnız aktif kredi
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT id, seq_no, due_date, amount FROM loan_installment "
+                  + "WHERE lending_id = ? AND status = 0 ORDER BY seq_no LIMIT 1")) {
+                ps.setInt(1, lendingId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) return p;
+                    p.installmentId = rs.getInt("id"); p.seqNo = rs.getInt("seq_no");
+                    p.dueDate = String.valueOf(rs.getDate("due_date")); p.baseAmount = rs.getDouble("amount");
+                }
+            }
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT COALESCE(SUM(amount),0) FROM loan_installment WHERE lending_id = ? AND status = 0")) {
+                ps.setInt(1, lendingId);
+                try (ResultSet rs = ps.executeQuery()) { rs.next(); p.remainingBefore = rs.getDouble(1); }
+            }
+            long daysLate = 0;
+            try {
+                java.time.LocalDate due = java.time.LocalDate.parse(p.dueDate);
+                if (java.time.LocalDate.now().isAfter(due))
+                    daysLate = java.time.temporal.ChronoUnit.DAYS.between(due, java.time.LocalDate.now());
+            } catch (Exception ignored) { }
+            p.daysLate = daysLate;
+            p.lateFee = daysLate > 0
+                    ? Math.round(p.baseAmount * (rate / 100.0 / 365.0) * LATE_MULT * daysLate * 100.0) / 100.0 : 0;
+            p.totalCharge = Math.round((p.baseAmount + p.lateFee) * 100.0) / 100.0;
+            p.currency = cur; p.accountNo = accNo; p.none = false;
+        } catch (SQLException e) {
+            ErrorLogDAO.log(e, "Taksit önizleme");
+        }
+        return p;
+    }
+
+    /** Kredinin bağlı olduğu (ödeme yapılan) hesabın güncel bakiyesi. */
+    public double accountBalanceOf(int lendingId) {
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "SELECT a.balance FROM lending l JOIN account a ON l.account_id = a.account_id WHERE l.id = ?")) {
+            ps.setInt(1, lendingId);
+            try (ResultSet rs = ps.executeQuery()) { if (rs.next()) return rs.getDouble(1); }
+        } catch (SQLException e) { ErrorLogDAO.log(e, "Kredi hesap bakiyesi"); }
+        return 0;
+    }
+
+    /** Kredinin kalan (ödenmemiş) taksit borcu toplamı. */
+    public double remainingDebt(int lendingId) {
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "SELECT COALESCE(SUM(amount),0) FROM loan_installment WHERE lending_id = ? AND status = 0")) {
+            ps.setInt(1, lendingId);
+            try (ResultSet rs = ps.executeQuery()) { if (rs.next()) return rs.getDouble(1); }
+        } catch (SQLException e) { ErrorLogDAO.log(e, "Kalan borç"); }
+        return 0;
     }
 
     public List<Installment> getInstallments(int lendingId) {
@@ -585,13 +721,15 @@ public class LendingDAO {
     private static final String BASE =
             "SELECT l.id, l.customer_id, c.customer_no, CONCAT(c.customer_name,' ',IFNULL(c.surname,'')) AS musteri, "
           + "a.account_no, l.loan_type, l.currency, l.amount, l.interest_rate, l.term_months, "
-          + "l.monthly_payment, l.total_due, l.status, l.reject_reason, l.start_date, l.maturity_date, l.auto_pay "
+          + "l.monthly_payment, l.total_due, l.status, l.reject_reason, l.start_date, l.maturity_date, l.auto_pay, "
+          + "l.approved_by, l.approved_at, l.disbursed_at "
           + "FROM lending l JOIN customer c ON l.customer_id = c.customer_id "
           + "JOIN account a ON l.account_id = a.account_id ";
 
     public List<Lending> getByCustomer(int customerId) { return query(BASE + "WHERE l.customer_id = ? ORDER BY l.id DESC", customerId); }
     public List<Lending> getAll() { return query(BASE + "ORDER BY l.id DESC", 0); }
     public List<Lending> getPending() { return query(BASE + "WHERE l.status = 0 ORDER BY l.id DESC", 0); }
+    public List<Lending> getApproved() { return query(BASE + "WHERE l.status = 4 ORDER BY l.id DESC", 0); }
 
     public int pendingCount() {
         try (Connection conn = DBConnection.getConnection();
@@ -616,7 +754,10 @@ public class LendingDAO {
                             rs.getDouble("monthly_payment"), rs.getDouble("total_due"), rs.getInt("status"),
                             rs.getString("reject_reason"),
                             String.valueOf(rs.getDate("start_date")), String.valueOf(rs.getDate("maturity_date")),
-                            rs.getInt("auto_pay")));
+                            rs.getInt("auto_pay"),
+                            rs.getString("approved_by"),
+                            String.valueOf(rs.getTimestamp("approved_at")),
+                            String.valueOf(rs.getDate("disbursed_at"))));
                 }
             }
         } catch (SQLException e) {
@@ -655,6 +796,51 @@ public class LendingDAO {
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setDouble(1, delta); ps.setInt(2, accountId); ps.executeUpdate();
         }
+    }
+    
+    /** Kredi ile ilgili aktivite kayıtları (detay ekranı — Hareketler sekmesi). */
+    public List<ActivityLog> loanActivity(int lendingId) {
+        String key = "%Kredi #" + lendingId + "%";
+        String sql = "SELECT id, action_type, username, customer_no, amount, currency, description, details, created_at "
+                   + "FROM activity_log WHERE description LIKE ? OR details LIKE ? ORDER BY id DESC";
+        List<ActivityLog> list = new ArrayList<>();
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, key); ps.setString(2, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new ActivityLog(
+                            rs.getInt("id"), rs.getString("action_type"), rs.getString("username"),
+                            rs.getInt("customer_no"), rs.getDouble("amount"), rs.getString("currency"),
+                            rs.getString("description"), rs.getString("details"),
+                            String.valueOf(rs.getTimestamp("created_at"))));
+                }
+            }
+        } catch (SQLException e) {
+            ErrorLogDAO.log(e, "Kredi hareketleri");
+        }
+        return list;
+    }
+
+    /** Başvuru anındaki KRS/KDS (denetim izi). [0]=skor, [1]=band, [2]=karar. Yoksa "-". */
+    public String[] krsKds(int lendingId) {
+        String sql = "SELECT krs_score, krs_band, kds_decision FROM lending WHERE id = ?";
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, lendingId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    int score = rs.getInt("krs_score");
+                    return new String[]{
+                            rs.wasNull() ? "-" : String.valueOf(score),
+                            rs.getString("krs_band") == null ? "-" : rs.getString("krs_band"),
+                            rs.getString("kds_decision") == null ? "-" : rs.getString("kds_decision")};
+                }
+            }
+        } catch (SQLException e) {
+            ErrorLogDAO.log(e, "Kredi KRS/KDS");
+        }
+        return new String[]{"-", "-", "-"};
     }
 
     /** Geciken (vadesi geçmiş, ödenmemiş) taksitleri getirir. */

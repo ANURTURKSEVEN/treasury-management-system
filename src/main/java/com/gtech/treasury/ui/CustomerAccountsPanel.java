@@ -213,8 +213,10 @@ public class CustomerAccountsPanel extends JPanel {
 
         // Tarih aralığı + PDF ekstre araç çubuğu
         List<ActivityLog> hareketler = activityDAO.byAccountNo(a.getAccountNo());
-        JTextField basField = new JTextField(LocalDate.now().withDayOfMonth(1).toString(), 10);
-        JTextField bitField = new JTextField(LocalDate.now().toString(), 10);
+        com.gtech.treasury.util.DatePicker basField =
+                new com.gtech.treasury.util.DatePicker(LocalDate.now().withDayOfMonth(1).toString());
+        com.gtech.treasury.util.DatePicker bitField =
+                new com.gtech.treasury.util.DatePicker(LocalDate.now().toString());
         JButton pdfBtn = new JButton("PDF Ekstre İndir");
         pdfBtn.addActionListener(e -> exportEkstrePdf(a, basField.getText(), bitField.getText(), hareketler));
 

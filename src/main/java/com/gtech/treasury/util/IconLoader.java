@@ -53,6 +53,10 @@ public final class IconLoader {
             case "ROLE_PERM":  return "roleperm";
             case "ERROR_LOG":  return "errorlog";
             case "BANK":       return "bank";
+            case "INBOX":      return "bell";
+            case "CINBOX":     return "bell";
+            case "CINBOX_MSG": return "bell";
+            case "CINBOX_NOTIF":return "bell";
             case "MY_INFO":    return "settings";
             default:           return "home";
         }

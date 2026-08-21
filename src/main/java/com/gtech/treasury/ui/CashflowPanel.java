@@ -36,7 +36,7 @@ public class CashflowPanel extends JPanel {
     private final Customer customer;   // null = banka
 
     private final Map<String, CurrencyRate> rateCache = new LinkedHashMap<>();
-    private final String[] PERIODS = {"Son 7 Gün", "Son 30 Gün", "Bu Ay", "Tümü"};
+    private final String[] PERIODS = {"Bugün", "Son 7 Gün", "Son 30 Gün", "Bu Ay", "Tümü"};
     private String period = "Son 30 Gün";
 
     public CashflowPanel(Customer customer) {
@@ -399,7 +399,7 @@ public class CashflowPanel extends JPanel {
                     boolean incoming = targetIsMine(a.getDescription(), myAccounts);
                     return new Flow(incoming ? +tl : -tl, incoming ? "Gelen Transfer" : "Giden Transfer");
                 }
-                case "LOAN_GIVEN": return new Flow(+tl, "Kredi Kullanımı");
+                case "LOAN_GIVEN": case "LOAN_DISBURSED": return new Flow(+tl, "Kredi Kullanımı");
                 case "LOAN_INSTALLMENT": return new Flow(-tl, "Kredi Taksiti");
                 case "LOAN_REPAID": return new Flow(-tl, "Kredi Kapama");
                 case "DEPOSIT_OPEN": return new Flow(-tl, "Mevduat Yatırma");
@@ -411,11 +411,18 @@ public class CashflowPanel extends JPanel {
                 case "ACCOUNT_DEPOSIT": return new Flow(+tl, "Para Yatırma (giriş)");
                 case "ACCOUNT_WITHDRAW": return new Flow(-tl, "Para Çekme (çıkış)");
                 case "EFT": case "FAST": return new Flow(-tl, "EFT/FAST (dışarı)");
-                case "LOAN_GIVEN": return new Flow(-tl, "Kredi Verme (çıkış)");
+                case "LOAN_GIVEN": case "LOAN_DISBURSED": return new Flow(-tl, "Kredi Verme (çıkış)");
                 case "LOAN_INSTALLMENT": return new Flow(+tl, "Taksit Tahsilatı (giriş)");
                 case "LOAN_REPAID": return new Flow(+tl, "Kredi Tahsilatı (giriş)");
                 case "DEPOSIT_OPEN": return new Flow(+tl, "Mevduat (giriş)");
                 case "DEPOSIT_CLOSE": case "DEPOSIT_BREAK": return new Flow(-tl, "Mevduat İadesi (çıkış)");
+                case "MM_BORROW_CREATE": return new Flow(+tl, "Para Piyasası Borçlanma (giriş)");
+                case "MM_BORROW_MATURE": return new Flow(-tl, "PP Borçlanma Geri Ödeme (çıkış)");
+                case "MM_BORROW_CANCEL": return new Flow(-tl, "PP Borçlanma İptal (çıkış)");
+                case "MM_LEND_CREATE": return new Flow(-tl, "Para Piyasası Plasman (çıkış)");
+                case "MM_LEND_MATURE": return new Flow(+tl, "PP Plasman Tahsil (giriş)");
+                case "MM_LEND_CANCEL": return new Flow(+tl, "PP Plasman İptal (giriş)");
+                case "MM_LEND_EARLY_CLOSE": return new Flow(+tl, "PP Plasman Erken Kapama (giriş)");
                 default: return null;
             }
         }
@@ -442,6 +449,7 @@ public class CashflowPanel extends JPanel {
         try { d = LocalDate.parse(datePart.substring(0, 10)); } catch (Exception e) { return true; }
         LocalDate today = LocalDate.now();
         switch (period) {
+            case "Bugün":      return d.equals(today);
             case "Son 7 Gün":  return !d.isBefore(today.minusDays(6));
             case "Son 30 Gün": return !d.isBefore(today.minusDays(29));
             case "Bu Ay":      return YearMonth.from(d).equals(YearMonth.from(today));

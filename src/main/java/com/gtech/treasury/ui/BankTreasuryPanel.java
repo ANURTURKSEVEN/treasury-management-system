@@ -2,16 +2,25 @@ package com.gtech.treasury.ui;
 
 import com.gtech.treasury.dao.AccountDAO;
 import com.gtech.treasury.dao.ActivityLogDAO;
+import com.gtech.treasury.dao.ErrorLogDAO;
 import com.gtech.treasury.dao.RateDAO;
 import com.gtech.treasury.dao.TreasurySnapshotDAO;
+import com.gtech.treasury.util.PdfService;
+
+import java.io.File;
 import com.gtech.treasury.model.Account;
+import com.gtech.treasury.model.ActivityLog;
 import com.gtech.treasury.model.CurrencyRate;
 import com.gtech.treasury.util.Notify;
 import com.gtech.treasury.util.UITheme;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.table.AbstractTableModel;
 import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +38,7 @@ public class BankTreasuryPanel extends JPanel {
 
     private final AccountDAO accountDAO = new AccountDAO();
     private final RateDAO rateDAO = new RateDAO();
+    private final ActivityLogDAO activityDAO = new ActivityLogDAO();
 
     public BankTreasuryPanel() {
         setLayout(new BorderLayout());
@@ -267,7 +277,8 @@ public class BankTreasuryPanel extends JPanel {
         card.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(new Color(0xE5E7EB)),
                 new EmptyBorder(10, 14, 10, 14)));
-        card.setPreferredSize(new Dimension(200, 96));
+        card.setPreferredSize(new Dimension(200, 110));
+        card.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
         JLabel cur = new JLabel(CUR_ICON.getOrDefault(a.getCurrency(), "🏦") + "  " + a.getCurrency() + " Kasası");
         cur.setFont(cur.getFont().deriveFont(Font.BOLD, 13f));
@@ -278,10 +289,21 @@ public class BankTreasuryPanel extends JPanel {
         bal.setForeground(a.getBalance() < 0 ? new Color(0xC5221F) : UITheme.PRIMARY);
         card.add(bal, BorderLayout.CENTER);
 
+        JPanel bottom = new JPanel(new BorderLayout());
+        bottom.setOpaque(false);
         JLabel no = new JLabel("Hesap: " + a.getAccountNo());
         no.setForeground(new Color(0x9CA3AF));
         no.setFont(no.getFont().deriveFont(11f));
-        card.add(no, BorderLayout.SOUTH);
+        bottom.add(no, BorderLayout.WEST);
+        JLabel more = new JLabel("Detay →");
+        more.setForeground(UITheme.PRIMARY);
+        more.setFont(more.getFont().deriveFont(11f));
+        bottom.add(more, BorderLayout.EAST);
+        card.add(bottom, BorderLayout.SOUTH);
+
+        card.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent e) { showDetail(a); }
+        });
         return card;
     }
 
@@ -289,6 +311,215 @@ public class BankTreasuryPanel extends JPanel {
         if ("TRY".equals(currency)) return amount;
         CurrencyRate r = rateDAO.getByCurrency(currency);
         return r == null ? amount : amount * r.getBuyRate();
+    }
+
+    // ================= KASA DETAYI (hesap bilgisi + giriş/çıkış hareketleri) =================
+    private void showDetail(Account a) {
+        removeAll();
+        add(buildDetail(a), BorderLayout.CENTER);
+        revalidate();
+        repaint();
+    }
+
+    private JComponent buildDetail(Account a) {
+        JPanel root = new JPanel(new BorderLayout(0, 12));
+        root.setBackground(new Color(0xF0F2F5));
+        root.setBorder(new EmptyBorder(14, 16, 14, 16));
+
+        JButton back = new JButton("←  Banka Kasası");
+        back.addActionListener(e -> rebuild());
+        JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        top.setOpaque(false);
+        top.add(back);
+        root.add(top, BorderLayout.NORTH);
+
+        // Hesap özeti
+        JPanel summary = new JPanel(new GridBagLayout());
+        summary.setBackground(Color.WHITE);
+        summary.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(0xE5E7EB)), new EmptyBorder(18, 24, 18, 24)));
+        GridBagConstraints g = new GridBagConstraints();
+        g.insets = new Insets(5, 8, 5, 8); g.anchor = GridBagConstraints.WEST;
+        JLabel bal = new JLabel(String.format("%,.2f %s", a.getBalance(), a.getCurrency()));
+        bal.setFont(bal.getFont().deriveFont(Font.BOLD, 26f));
+        bal.setForeground(a.getBalance() < 0 ? new Color(0xC5221F) : UITheme.PRIMARY);
+        g.gridx = 0; g.gridy = 0; g.gridwidth = 2; summary.add(bal, g); g.gridwidth = 1;
+        int r = 1;
+        r = info(summary, g, r, "Kasa:", a.getCurrency() + " Kasası");
+        r = info(summary, g, r, "Hesap No:", String.valueOf(a.getAccountNo()));
+        r = info(summary, g, r, "Döviz:", a.getCurrency());
+        r = info(summary, g, r, "TL Karşılığı:", String.format("%,.2f ₺", toTry(a.getBalance(), a.getCurrency())));
+        r = info(summary, g, r, "Durum:", a.getStatus() == 1 ? "Açık" : "Kapalı");
+
+        // Hareketler (bu dövizin kasa giriş/çıkışları)
+        List<ActivityLog> all = activityDAO.search("", "", "", "", a.getCurrency(), "", "");
+        List<ActivityLog> flows = new ArrayList<>();
+        for (ActivityLog al : all) if (bankLabel(al.getActionType()) != null) flows.add(al);
+
+        JLabel mt = new JLabel("Kasa Hareketleri  —  " + a.getCurrency()
+                + "  (giriş / çıkış — satıra çift tıklayarak dekontu görün)");
+        mt.setFont(mt.getFont().deriveFont(Font.BOLD, 15f));
+
+        BankMoveModel moveModel = new BankMoveModel(flows);
+        JTable table = new JTable(moveModel);
+        table.setRowHeight(26);
+        table.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() == 2) {
+                    int row = table.getSelectedRow();
+                    if (row >= 0) showReceipt(moveModel.getAt(table.convertRowIndexToModel(row)));
+                }
+            }
+        });
+        JScrollPane sp = new JScrollPane(table);
+        sp.setPreferredSize(new Dimension(700, 260));
+
+        JPanel movePanel = new JPanel(new BorderLayout(0, 6));
+        movePanel.setOpaque(false);
+        movePanel.add(mt, BorderLayout.NORTH);
+        movePanel.add(sp, BorderLayout.CENTER);
+        if (flows.isEmpty()) {
+            JLabel empty = new JLabel("Bu kasada henüz hareket yok.");
+            empty.setForeground(new Color(0x6B7280));
+            empty.setBorder(new EmptyBorder(8, 2, 2, 2));
+            movePanel.add(empty, BorderLayout.SOUTH);
+        }
+
+        JPanel center = new JPanel(new BorderLayout(0, 14));
+        center.setOpaque(false);
+        center.add(summary, BorderLayout.NORTH);
+        center.add(movePanel, BorderLayout.CENTER);
+        root.add(center, BorderLayout.CENTER);
+        return root;
+    }
+
+    private int info(JPanel p, GridBagConstraints g, int row, String label, String value) {
+        g.gridx = 0; g.gridy = row;
+        JLabel l = new JLabel(label); l.setFont(l.getFont().deriveFont(Font.BOLD));
+        p.add(l, g);
+        g.gridx = 1;
+        p.add(new JLabel(value == null ? "-" : value), g);
+        return row + 1;
+    }
+
+    /** Banka kasası perspektifinden hareket etiketi (null = kasayı etkilemeyen işlem, gösterilmez). */
+    private static String bankLabel(String type) {
+        if (type == null) return null;
+        switch (type) {
+            case "ACCOUNT_DEPOSIT":  return "Para Yatırma (giriş)";
+            case "ACCOUNT_WITHDRAW": return "Para Çekme (çıkış)";
+            case "EFT": case "FAST": return "EFT/FAST (dışarı)";
+            case "LOAN_GIVEN": case "LOAN_DISBURSED": return "Kredi Verme (çıkış)";
+            case "LOAN_INSTALLMENT": return "Taksit Tahsilatı (giriş)";
+            case "LOAN_REPAID":      return "Kredi Tahsilatı (giriş)";
+            case "DEPOSIT_OPEN":     return "Mevduat (giriş)";
+            case "DEPOSIT_CLOSE": case "DEPOSIT_BREAK": return "Mevduat İadesi (çıkış)";
+            case "MM_BORROW_CREATE": return "Para Piyasası Borçlanma (giriş)";
+            case "MM_BORROW_MATURE": return "PP Borçlanma Geri Ödeme (çıkış)";
+            case "MM_BORROW_CANCEL": return "PP Borçlanma İptal (çıkış)";
+            case "MM_LEND_CREATE":   return "Para Piyasası Plasman (çıkış)";
+            case "MM_LEND_MATURE":   return "PP Plasman Tahsil (giriş)";
+            case "MM_LEND_CANCEL":   return "PP Plasman İptal (giriş)";
+            case "MM_LEND_EARLY_CLOSE": return "PP Plasman Erken Kapama (giriş)";
+            default: return null;
+        }
+    }
+
+    /** true = kasaya giriş (+), false = çıkış (−). */
+    private static boolean bankIsInflow(String type) {
+        switch (type) {
+            case "ACCOUNT_DEPOSIT": case "LOAN_INSTALLMENT": case "LOAN_REPAID": case "DEPOSIT_OPEN":
+            case "MM_BORROW_CREATE":
+            case "MM_LEND_MATURE": case "MM_LEND_CANCEL": case "MM_LEND_EARLY_CLOSE":
+                return true;
+            default:
+                return false;   // withdraw, EFT/FAST, kredi verme, mevduat iadesi
+        }
+    }
+
+    /** Bir kasa hareketi için dekont penceresi + PDF indirme (müşteri ekranındaki akışın aynısı). */
+    private void showReceipt(ActivityLog a) {
+        String islem = bankLabel(a.getActionType());
+        if (islem == null) islem = a.getActionType();
+
+        JPanel card = new JPanel(new GridBagLayout());
+        card.setBorder(new EmptyBorder(8, 8, 8, 8));
+        GridBagConstraints g = new GridBagConstraints();
+        g.insets = new Insets(5, 8, 5, 8); g.anchor = GridBagConstraints.WEST;
+
+        int r = 0;
+        JLabel header = new JLabel("Banka Kasa Dekontu");
+        header.setFont(header.getFont().deriveFont(Font.BOLD, 18f));
+        g.gridx = 0; g.gridy = r++; g.gridwidth = 2; card.add(header, g); g.gridwidth = 1;
+
+        boolean in = bankIsInflow(a.getActionType());
+        r = recRow(card, g, r, "İşlem No:", String.valueOf(a.getId()));
+        r = recRow(card, g, r, "Tarih:", a.getDatePart() + " " + a.getTimePart());
+        r = recRow(card, g, r, "İşlem:", islem);
+        r = recRow(card, g, r, "Yön:", in ? "Giriş (+)" : "Çıkış (−)");
+        r = recRow(card, g, r, "Tutar:", (in ? "+" : "−") + String.format("%,.2f %s",
+                a.getAmount(), a.getCurrency() == null ? "" : a.getCurrency()));
+        r = recRow(card, g, r, "Yapan:", a.getUsername());
+        r = recRow(card, g, r, "Açıklama:", a.getDescription());
+
+        g.gridx = 0; g.gridy = r++; g.gridwidth = 2; card.add(new JSeparator(), g);
+        JLabel dt = new JLabel("Detaylar"); dt.setFont(dt.getFont().deriveFont(Font.BOLD));
+        g.gridy = r++; card.add(dt, g);
+        JTextArea details = new JTextArea(a.getDetails() == null ? "-" : a.getDetails(), 4, 40);
+        details.setEditable(false); details.setLineWrap(true); details.setWrapStyleWord(true);
+        details.setBackground(new Color(0xF3F4F6));
+        g.gridy = r++; card.add(new JScrollPane(details), g);
+
+        Object[] secenekler = {"PDF İndir", "Kapat"};
+        int secim = JOptionPane.showOptionDialog(this, card, "Dekont - İşlem #" + a.getId(),
+                JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE, null, secenekler, secenekler[1]);
+        if (secim != 0) return;   // "PDF İndir" değilse çık
+
+        JFileChooser fc = new JFileChooser();
+        fc.setSelectedFile(new File("kasa_dekont_" + a.getId() + ".pdf"));
+        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        try {
+            PdfService.dekontUret(fc.getSelectedFile(), islem, AccountDAO.BANK_CUSTOMER_NO,
+                    a.getAmount(), a.getCurrency() == null ? "" : a.getCurrency(),
+                    a.getDescription(), a.getDatePart() + " " + a.getTimePart());
+            Notify.info(this, "Dekont kaydedildi:\n" + fc.getSelectedFile().getAbsolutePath());
+        } catch (Exception ex) {
+            ErrorLogDAO.log(ex, "Banka kasa dekont PDF");
+            Notify.error(this, "PDF üretilemedi: " + ex.getMessage());
+        }
+    }
+
+    /** Dekont kartı için etiket/değer satırı. */
+    private int recRow(JPanel p, GridBagConstraints g, int row, String label, String value) {
+        g.gridx = 0; g.gridy = row;
+        JLabel l = new JLabel(label); l.setFont(l.getFont().deriveFont(Font.BOLD)); p.add(l, g);
+        g.gridx = 1; p.add(new JLabel(value == null ? "-" : value), g);
+        return row + 1;
+    }
+
+    private static class BankMoveModel extends AbstractTableModel {
+        private final String[] cols = {"Tarih", "İşlem", "Tutar", "Açıklama"};
+        private final List<ActivityLog> data;
+        BankMoveModel(List<ActivityLog> data) { this.data = data; }
+        ActivityLog getAt(int r) { return data.get(r); }
+        @Override public int getRowCount() { return data.size(); }
+        @Override public int getColumnCount() { return cols.length; }
+        @Override public String getColumnName(int c) { return cols[c]; }
+        @Override public boolean isCellEditable(int r, int c) { return false; }
+        @Override public Object getValueAt(int row, int col) {
+            ActivityLog a = data.get(row);
+            switch (col) {
+                case 0: return a.getDatePart() + " " + a.getTimePart();
+                case 1: return bankLabel(a.getActionType());
+                case 2: {
+                    boolean in = bankIsInflow(a.getActionType());
+                    return (in ? "+" : "−") + String.format("%,.2f %s",
+                            a.getAmount(), a.getCurrency() == null ? "" : a.getCurrency());
+                }
+                case 3: return a.getDescription();
+                default: return "";
+            }
+        }
     }
 
     /** Banka kasasına (bütçesine) para ekle/çıkar (admin). */

@@ -235,8 +235,16 @@ public class BorrowingPanel extends JPanel {
     private void doEvaluateDeposit() {
         int r = pendingTable.getSelectedRow();
         if (r < 0) { Notify.warning(this, "Değerlendirmek için bir başvuru seçin."); return; }
-        Deposit d = pendingModel.getAt(pendingTable.convertRowIndexToModel(r));
+        doEvaluateDeposit(pendingModel.getAt(pendingTable.convertRowIndexToModel(r)));
+    }
 
+    /** Gelen kutusundan çağrı: verilen id'li bekleyen mevduat başvurusunu değerlendirir. */
+    public void evaluate(int id) {
+        for (Deposit d : borrowingDAO.getPending()) if (d.getId() == id) { doEvaluateDeposit(d); return; }
+        Notify.info(this, "Bu başvuru bekleyenler arasında değil (zaten sonuçlanmış olabilir).");
+    }
+
+    private void doEvaluateDeposit(Deposit d) {
         JPanel card = new JPanel(new GridBagLayout());
         card.setBorder(new EmptyBorder(8, 8, 8, 8));
         GridBagConstraints g = new GridBagConstraints();
@@ -285,24 +293,36 @@ public class BorrowingPanel extends JPanel {
         t.setFont(t.getFont().deriveFont(Font.BOLD, 15f));
         panel.add(t, BorderLayout.NORTH);
         table.setRowHeight(26);
+        table.getColumnModel().getColumn(model.findColumn("Durum")).setCellRenderer(new DepCellRenderer(model));
+        table.getColumnModel().getColumn(model.findColumn("Kalan Gün")).setCellRenderer(new DepCellRenderer(model));
         table.setPreferredScrollableViewportSize(new Dimension(900, 190)); // kısa; içinde kaydırılır
         panel.add(new JScrollPane(table), BorderLayout.CENTER);
 
+        boolean activeView = V_ACTIVE.equals(view) || V_ALL.equals(view);
+
         JPanel south = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
-        if (staffMode) {
-            JButton editDate = new JButton("Vade Tarihi Düzenle");
-            editDate.addActionListener(e -> doEditMaturity());
-            JButton batch = new JButton("Vadesi Gelenleri Kapat (Batch)");
-            batch.addActionListener(e -> { int n = borrowingDAO.matureDue(); reloadAll(); Notify.info(this, n + " mevduat vade sonu kapatıldı."); });
-            JButton test = new JButton("Test: Vadeyi Bugüne Çek + Kapat");
-            test.addActionListener(e -> doTestMature());
-            south.add(editDate); south.add(batch); south.add(test);
-        }
-        JButton brk = new JButton("Erken Boz");
-        brk.addActionListener(e -> doBreak());
+
+        // Detay + Yenile: her ekranda
+        JButton detail = new JButton("Detay");
+        detail.addActionListener(e -> doShowDetail());
         JButton refresh = new JButton("Yenile");
         refresh.addActionListener(e -> reloadAll());
-        south.add(refresh); south.add(brk);
+        south.add(detail);
+        south.add(refresh);
+
+        // Aktif mevduat işlemleri
+        if (activeView) {
+            JButton brk = new JButton("Erken Boz");
+            brk.addActionListener(e -> doBreak());
+            south.add(brk);
+            if (staffMode) {
+                JButton editDate = new JButton("Vade Tarihi Düzenle");
+                editDate.addActionListener(e -> doEditMaturity());
+                JButton batch = new JButton("Vadesi Gelenleri Kapat (Batch)");
+                batch.addActionListener(e -> { int n = borrowingDAO.matureDue(); reloadAll(); Notify.info(this, n + " mevduat vade sonu kapatıldı."); });
+                south.add(editDate); south.add(batch);
+            }
+        }
         panel.add(south, BorderLayout.SOUTH);
         return panel;
     }
@@ -311,6 +331,12 @@ public class BorrowingPanel extends JPanel {
         int r = table.getSelectedRow();
         if (r < 0) return null;
         return model.getAt(table.convertRowIndexToModel(r));
+    }
+
+    private void doShowDetail() {
+        Deposit d = selected();
+        if (d == null) { Notify.warning(this, "Detayını görmek için bir mevduat seçin."); return; }
+        new DepositDetailDialog(SwingUtilities.getWindowAncestor(this), d, borrowingDAO).setVisible(true);
     }
 
     private void doBreak() {
@@ -332,18 +358,20 @@ public class BorrowingPanel extends JPanel {
         if (d == null) { Notify.warning(this, "Bir mevduat seçin."); return; }
         if (d.getStatus() != 1) { Notify.warning(this, "Sadece AKTİF mevduatın vade tarihi değiştirilebilir."); return; }
         String cur = d.getMaturityDate() != null && d.getMaturityDate().length() >= 10
-                ? d.getMaturityDate().substring(0, 10) : "";
-        while (true) {
-            String s = JOptionPane.showInputDialog(this, "Yeni vade tarihi (yyyy-MM-dd):", cur);
-            if (s == null) return;
-            s = s.trim();
-            try { LocalDate.parse(s); } catch (Exception ex) { Notify.warning(this, "Geçersiz tarih. Örnek: 2026-12-31"); continue; }
-            String err = borrowingDAO.updateMaturity(d.getId(), s);
-            if (err != null) { Notify.warning(this, err); return; }
-            reloadAll();
-            Notify.info(this, "Vade tarihi güncellendi: " + s);
-            return;
-        }
+                ? d.getMaturityDate().substring(0, 10) : null;
+        com.gtech.treasury.util.DatePicker dp = new com.gtech.treasury.util.DatePicker(cur);
+        JPanel p = new JPanel(new BorderLayout(6, 6));
+        p.add(new JLabel("Yeni vade tarihi:"), BorderLayout.NORTH);
+        p.add(dp, BorderLayout.CENTER);
+        int r = JOptionPane.showConfirmDialog(this, p, "Vade Tarihi Düzenle",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (r != JOptionPane.OK_OPTION) return;
+        String s = dp.getText().trim();
+        try { LocalDate.parse(s); } catch (Exception ex) { Notify.warning(this, "Geçersiz tarih. Örnek: 2026-12-31"); return; }
+        String err = borrowingDAO.updateMaturity(d.getId(), s);
+        if (err != null) { Notify.warning(this, err); return; }
+        reloadAll();
+        Notify.info(this, "Vade tarihi güncellendi: " + s);
     }
 
     private void doTestMature() {
@@ -426,8 +454,8 @@ public class BorrowingPanel extends JPanel {
         DepTableModel(boolean showCustomer) {
             this.showCustomer = showCustomer;
             this.cols = showCustomer
-                    ? new String[]{"#", "Müşteri", "Sözleşme", "Tutar", "Faiz%", "Vade", "Getiri", "Vade Sonu", "Durum"}
-                    : new String[]{"#", "Sözleşme", "Tutar", "Faiz%", "Vade", "Getiri", "Vade Sonu", "Durum"};
+                    ? new String[]{"#", "Müşteri", "Sözleşme", "Tutar", "Vade", "Net Getiri", "Kalan Gün", "Vade Tarihi", "Durum"}
+                    : new String[]{"#", "Sözleşme", "Tutar", "Vade", "Net Getiri", "Kalan Gün", "Vade Tarihi", "Durum"};
         }
         void setData(List<Deposit> l) { this.data = l; fireTableDataChanged(); }
         Deposit getAt(int r) { return data.get(r); }
@@ -437,22 +465,56 @@ public class BorrowingPanel extends JPanel {
         @Override public boolean isCellEditable(int r, int c) { return false; }
         @Override public Object getValueAt(int row, int col) {
             Deposit d = data.get(row);
-            int i = col;
-            if (showCustomer) {
-                if (i == 0) return d.getId();
-                if (i == 1) return d.getCustomerNo() + " - " + d.getCustomerName();
-                i -= 1;
-            } else if (i == 0) return d.getId();
-            switch (i) {
-                case 1: return d.getContractLabel();
-                case 2: return String.format("%,.2f %s", d.getAmount(), d.getCurrency());
-                case 3: return String.format("%.0f", d.getInterestRate());
-                case 4: return d.getTermMonths() + " ay";
-                case 5: return String.format("%,.2f", d.getTotalReturn());
-                case 6: return d.getMaturityDate();
-                case 7: return d.getStatusText();
-                default: return "";
+            switch (cols[col]) {
+                case "#":          return d.getId();
+                case "Müşteri":    return d.getCustomerNo() + " - " + d.getCustomerName();
+                case "Sözleşme":   return d.getContractLabel();
+                case "Tutar":      return String.format("%,.2f %s", d.getAmount(), d.getCurrency());
+                case "Vade":       return d.getTermMonths() + " ay";
+                case "Net Getiri": {
+                    double tax = d.getInterestAmount() * BorrowingDAO.depositTaxRate(d.getTermMonths());
+                    return String.format("%,.2f %s", d.getAmount() + d.getInterestAmount() - tax, d.getCurrency());
+                }
+                case "Kalan Gün":   return kalanGun(d);
+                case "Vade Tarihi": return d.getMaturityDate();
+                case "Durum":       return d.getStatusText();
+                default:            return "";
             }
+        }
+        static String kalanGun(Deposit d) {
+            if (d.getStatus() != 1) return "-";
+            try {
+                java.time.LocalDate m = java.time.LocalDate.parse(d.getMaturityDate().substring(0, 10));
+                long g = java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.now(), m);
+                return g >= 0 ? g + " gün" : "vadesi doldu";
+            } catch (Exception e) { return "-"; }
+        }
+    }
+
+    /** Durum'u statüye, Kalan Gün'ü (vadesi geçtiyse) kırmızıya boyar. */
+    private static class DepCellRenderer extends javax.swing.table.DefaultTableCellRenderer {
+        private final DepTableModel m;
+        DepCellRenderer(DepTableModel m) { this.m = m; }
+        @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean s, boolean f, int row, int col) {
+            super.getTableCellRendererComponent(t, v, s, f, row, col);
+            setFont(getFont().deriveFont(Font.PLAIN));
+            if (!s) setForeground(Color.BLACK);
+            String colName = t.getColumnName(col);
+            Deposit d = m.getAt(t.convertRowIndexToModel(row));
+            if ("Durum".equals(colName)) {
+                if (!s) setForeground(statusColor(d));
+                setFont(getFont().deriveFont(Font.BOLD));
+            } else if ("Kalan Gün".equals(colName) && "vadesi doldu".equals(v)) {
+                if (!s) setForeground(new Color(0xC5221F));
+                setFont(getFont().deriveFont(Font.BOLD));
+            }
+            return this;
+        }
+        static Color statusColor(Deposit d) {
+            if (d.getStatus() == 2) return new Color(0x6B7280);
+            if (d.getStatus() == 3) return new Color(0xC5221F);
+            if (d.getStatus() == 1) return new Color(0x1E8E3E);
+            return new Color(0x374151);
         }
     }
 }
